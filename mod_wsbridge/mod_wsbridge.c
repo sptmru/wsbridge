@@ -421,7 +421,7 @@ wsbridge_callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
 		size = strlen(message);
 		bugfree_message = (char*) calloc(size + 2, sizeof(char));
 		bugfree_message[0] = ' ';
-		strncpy(bugfree_message + 1, message, size);
+		snprintf(bugfree_message + 1, size, "%s", message);
 
 		switch_log_printf(
 			SWITCH_CHANNEL_LOG,
@@ -681,7 +681,7 @@ wsbridge_callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
 				assert (bugfree_message != NULL);
 
 				bugfree_message[0] = ' ';
-				strncpy(bugfree_message + 1, dtmf_json_unformatted, size);
+				snprintf(bugfree_message + 1, size, "%s", dtmf_json_unformatted);
 
 				switch_log_printf(
 					SWITCH_CHANNEL_LOG,
@@ -1552,7 +1552,7 @@ static switch_call_cause_t channel_outgoing_channel(switch_core_session_t *sessi
 
 		/* add back the leading / on path */
 		tech_pvt->path[0] = '/';
-		strncpy(tech_pvt->path + 1, p, sizeof(tech_pvt->path) - 2);
+		snprintf(tech_pvt->path + 1, sizeof(tech_pvt->path) - 2, "%s", p);
 		tech_pvt->path[sizeof(tech_pvt->path) - 1] = '\0';
 		tech_pvt->i.path = tech_pvt->path;
 
@@ -1736,7 +1736,7 @@ static void wsbridge_strncpy_null_term(char *dst, char *src, int len)
 	if ((dst == NULL) || (src == NULL)) {
 		return; 
 	}
-	strncpy(dst, src, len);
+	snprintf(dst, len, "%s", src);
 	dst[len - 1] = '\0';
 }
 
