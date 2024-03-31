@@ -28,6 +28,7 @@
  * Tiago Lam
  * Neil Stratford (neil.stratford@vonage.com)
  * Dragos Oancea  (dragos.oancea@vonage.com)
+ * Soslan Aldatov (soslanaldatov@gmail.com)
  *
  *
  * mod_wsbridge.c -- WSBRIDGE Endpoint Module for Websockets
@@ -1893,7 +1894,7 @@ SWITCH_STANDARD_API(mod_wsbridge_debug)
 	return SWITCH_STATUS_SUCCESS;
 }
 
-#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url json | stop URL json>"
+#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url json | stop ws_url json>"
 SWITCH_STANDARD_API(mod_wsbridge)
 {
 	int argc;
