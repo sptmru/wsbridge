@@ -93,6 +93,9 @@
 
 #define DTMF_QUEUE_SIZE 100 /*digits*/
 
+#define API_PARAMS_MIN 3
+#define API_PARAMS_MAX 5
+
 SWITCH_MODULE_LOAD_FUNCTION(mod_wsbridge_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_wsbridge_shutdown);
 SWITCH_MODULE_DEFINITION(mod_wsbridge, mod_wsbridge_load, mod_wsbridge_shutdown, NULL);
@@ -1888,6 +1891,46 @@ SWITCH_STANDARD_API(mod_wsbridge_debug)
 	}
 
 	return SWITCH_STATUS_SUCCESS;
+}
+
+#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url json | stop URL json>"
+SWITCH_STANDARD_API(mod_wsbridge)
+{
+	int argc;
+	char *argv[API_PARAMS_MAX];
+	char *ccmd = NULL;
+	char *uuid;
+	char *command;
+	char *ws_url;
+	char *content_type;
+	char *headers;
+
+	if (zstr(cmd)) {
+		stream->write_function(stream, "-usage: %s\n", WSBRIDGE_API_SYNTAX);
+		return SWITCH_STATUS_SUCCESS;
+	} 
+
+	ccmd = strdup(cmd);
+	argc = switch_separate_string(ccmd, ' ', argv, API_PARAMS_MAX);
+
+	if (argc < API_PARAMS_MIN || argc > API_PARAMS_MAX) {
+		stream->write_function(stream, "-usage: %s\n", WSBRIDGE_API_SYNTAX);
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	uuid = argv[0];
+	command = argv[1];
+	ws_url = argv[2];
+	content_type = argv[3];
+	headers = argv[4];
+
+	stream->write_function(stream, "UUID: %s\n", uuid);
+	stream->write_function(stream, "Command: %s\n", command);
+	stream->write_function(stream, "WS URL: %s\n", ws_url);
+	stream->write_function(stream, "Content Type: %s\n", content_type);
+	stream->write_function(stream, "Headers: %s\n", headers);
+
+	return SWITCH_STATUS_SUCCESS;
 } 
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_wsbridge_load)
@@ -1905,6 +1948,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_wsbridge_load)
 	wsbridge_endpoint_interface->state_handler = &wsbridge_state_handlers;
 
 	SWITCH_ADD_API(commands_api_interface, "wsbridge_debug", "Enable WSBridge Debug", mod_wsbridge_debug, WSBRIDGE_DEBUG_SYNTAX);
+	SWITCH_ADD_API(commands_api_interface, "wsbridge", "WSBridge API", mod_wsbridge, WSBRIDGE_API_SYNTAX);
 	switch_console_set_complete("add wsbridge_debug on");
 	switch_console_set_complete("add wsbridge_debug off");
 
