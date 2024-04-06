@@ -1337,7 +1337,7 @@ static switch_call_cause_t channel_outgoing_channel(switch_core_session_t *sessi
 	if ((*new_session = switch_core_session_request(wsbridge_endpoint_interface, SWITCH_CALL_DIRECTION_OUTBOUND, flags, pool)) != 0) {
 		private_t *tech_pvt;
 		switch_channel_t *channel = NULL , *new_channel;
-		// switch_caller_profile_t *caller_profile;
+		switch_caller_profile_t *caller_profile;
 		const char *prot, *p;
 		uint32_t use_ssl;
 		char *ws_uri = NULL , *ws_content_type = NULL , *ws_headers = NULL;
@@ -1366,21 +1366,21 @@ static switch_call_cause_t channel_outgoing_channel(switch_core_session_t *sessi
 			ws_content_type = (char*) switch_channel_get_variable(channel, HEADER_WS_CONT_TYPE);
 		}
 
-		// if (!ws_uri) {
-		// 	/*  so it will work like this, eg: FS_CLI> originate wsbridge/ws://127.0.0.1:8010/socket &conference(123) */
-		// 	if (!zstr(outbound_profile->destination_number)) {
-		// 		ws_uri = switch_core_strdup(outbound_profile->pool, outbound_profile->destination_number);
-		// 	} else {
-		// 		if (session) {
-		// 			switch_log_printf(
-		// 				SWITCH_CHANNEL_SESSION_LOG(session),
-		// 				SWITCH_LOG_ERROR,
-		// 				"Invalid Websocket destination (unset URI from hdr or CLI)\n");
-		// 		}
-		// 		switch_core_session_destroy(new_session);
-		// 		return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
-		// 	}
-		// }
+		if (!ws_uri) {
+			/*  so it will work like this, eg: FS_CLI> originate wsbridge/ws://127.0.0.1:8010/socket &conference(123) */
+			if (!zstr(outbound_profile->destination_number)) {
+				ws_uri = switch_core_strdup(outbound_profile->pool, outbound_profile->destination_number);
+			} else {
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_ERROR,
+						"Invalid Websocket destination (unset URI from hdr or CLI)\n");
+				}
+				switch_core_session_destroy(new_session);
+				return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+			}
+		}
 
 		 if (zstr(ws_uri)) {
 			if (session) {
@@ -1404,30 +1404,30 @@ static switch_call_cause_t channel_outgoing_channel(switch_core_session_t *sessi
 		}
 
 		/* Handle the URI (it's mandatory) */
-		// if (outbound_profile) {
-		// 	char name[WS_URI_MAX_SIZE];
+		if (outbound_profile) {
+			char name[WS_URI_MAX_SIZE];
 
-		// 	switch_url_decode(ws_uri);
-		// 	wsbridge_str_remove_quotes(ws_uri);
-		// 	wsbridge_str_remove_empty_spaces(ws_uri);
+			switch_url_decode(ws_uri);
+			wsbridge_str_remove_quotes(ws_uri);
+			wsbridge_str_remove_empty_spaces(ws_uri);
 
-		// 	outbound_profile->destination_number = switch_core_strdup(outbound_profile->pool, ws_uri);
-		// 	snprintf(name, sizeof(name), "wsbridge/%s", outbound_profile->destination_number);
-		// 	switch_channel_set_name(new_channel, name);
+			outbound_profile->destination_number = switch_core_strdup(outbound_profile->pool, ws_uri);
+			snprintf(name, sizeof(name), "wsbridge/%s", outbound_profile->destination_number);
+			switch_channel_set_name(new_channel, name);
 
-		// 	caller_profile = switch_caller_profile_clone(*new_session, outbound_profile);
-		// 	switch_channel_set_caller_profile(new_channel, caller_profile);
-		// 	tech_pvt->caller_profile = caller_profile;
-		// } else {
-		// 	if (session) {
-		// 	switch_log_printf(
-		// 		SWITCH_CHANNEL_SESSION_LOG(session),
-		// 		SWITCH_LOG_ERROR,
-		// 		"Doh! Invalid caller profile / WS destination\n");
-		// 	}
-		// 	switch_core_session_destroy(new_session);
-		// 	return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
-		// }
+			caller_profile = switch_caller_profile_clone(*new_session, outbound_profile);
+			switch_channel_set_caller_profile(new_channel, caller_profile);
+			tech_pvt->caller_profile = caller_profile;
+		} else {
+			if (session) {
+			switch_log_printf(
+				SWITCH_CHANNEL_SESSION_LOG(session),
+				SWITCH_LOG_ERROR,
+				"Doh! Invalid caller profile / WS destination\n");
+			}
+			switch_core_session_destroy(new_session);
+			return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+		}
 
 		/* Handle the custom headers (they are optional) */
 		if (!zstr(ws_headers)) {
@@ -1896,20 +1896,21 @@ SWITCH_STANDARD_API(mod_wsbridge_debug)
 
 static switch_call_cause_t create_ws_bridge(
     switch_core_session_t *session,
-		switch_event_t *var_event,
-		switch_caller_profile_t *outbound_profile,
 		switch_core_session_t **new_session,
 		switch_memory_pool_t **pool,
     switch_originate_flag_t flags,
-    switch_call_cause_t *cancel_cause)
+    switch_call_cause_t *cancel_cause,
+		char *ws_uri,
+		char *ws_content_type,
+		char *ws_headers
+		)
 {
 		if ((*new_session = switch_core_session_request(wsbridge_endpoint_interface, SWITCH_CALL_DIRECTION_OUTBOUND, flags, pool)) != 0) {
 			private_t *tech_pvt;
 			switch_channel_t *channel = NULL , *new_channel;
-			// switch_caller_profile_t *caller_profile;
 			const char *prot, *p;
 			uint32_t use_ssl;
-			char *ws_uri = NULL , *ws_content_type = NULL , *ws_headers = NULL;
+			// char *ws_uri = NULL , *ws_content_type = NULL , *ws_headers = NULL;
 			/* Maximum lenght for the headers field. */
 			char parsed_ws_headers[WS_HEADERS_MAX_SIZE];
 			struct lws_context *context;
@@ -1929,29 +1930,8 @@ static switch_call_cause_t create_ws_bridge(
 				channel = switch_core_session_get_channel(session);
 				assert(channel != NULL);
 			} 
-			if (channel) {
-				ws_uri =  (char*) switch_channel_get_variable(channel, HEADER_WS_URI);
-				ws_headers = (char*) switch_channel_get_variable(channel, HEADER_WS_HEADERS);
-				ws_content_type = (char*) switch_channel_get_variable(channel, HEADER_WS_CONT_TYPE);
-			}
 
-			// if (!ws_uri) {
-			// 	/*  so it will work like this, eg: FS_CLI> originate wsbridge/ws://127.0.0.1:8010/socket &conference(123) */
-			// 	if (!zstr(outbound_profile->destination_number)) {
-			// 		ws_uri = switch_core_strdup(outbound_profile->pool, outbound_profile->destination_number);
-			// 	} else {
-			// 		if (session) {
-			// 			switch_log_printf(
-			// 				SWITCH_CHANNEL_SESSION_LOG(session),
-			// 				SWITCH_LOG_ERROR,
-			// 				"Invalid Websocket destination (unset URI from hdr or CLI)\n");
-			// 		}
-			// 		switch_core_session_destroy(new_session);
-			// 		return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
-			// 	}
-			// }
-
-				if (zstr(ws_uri)) {
+			if (zstr(ws_uri)) {
 				if (session) {
 					switch_log_printf(
 						SWITCH_CHANNEL_SESSION_LOG(session),
@@ -1960,7 +1940,7 @@ static switch_call_cause_t create_ws_bridge(
 				}
 				switch_core_session_destroy(new_session);
 				return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
-				}
+			}
 
 			if (session) {
 				switch_log_printf(
@@ -1973,30 +1953,12 @@ static switch_call_cause_t create_ws_bridge(
 			}
 
 			/* Handle the URI (it's mandatory) */
-			// if (outbound_profile) {
-			// 	char name[WS_URI_MAX_SIZE];
 
-			// 	switch_url_decode(ws_uri);
-			// 	wsbridge_str_remove_quotes(ws_uri);
-			// 	wsbridge_str_remove_empty_spaces(ws_uri);
+			// char name[WS_URI_MAX_SIZE];
 
-			// 	outbound_profile->destination_number = switch_core_strdup(outbound_profile->pool, ws_uri);
-			// 	snprintf(name, sizeof(name), "wsbridge/%s", outbound_profile->destination_number);
-			// 	switch_channel_set_name(new_channel, name);
-
-			// 	caller_profile = switch_caller_profile_clone(*new_session, outbound_profile);
-			// 	switch_channel_set_caller_profile(new_channel, caller_profile);
-			// 	tech_pvt->caller_profile = caller_profile;
-			// } else {
-			// 	if (session) {
-			// 	switch_log_printf(
-			// 		SWITCH_CHANNEL_SESSION_LOG(session),
-			// 		SWITCH_LOG_ERROR,
-			// 		"Doh! Invalid caller profile / WS destination\n");
-			// 	}
-			// 	switch_core_session_destroy(new_session);
-			// 	return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
-			// }
+			switch_url_decode(ws_uri);
+			wsbridge_str_remove_quotes(ws_uri);
+			wsbridge_str_remove_empty_spaces(ws_uri);
 
 			/* Handle the custom headers (they are optional) */
 			if (!zstr(ws_headers)) {
@@ -2233,14 +2195,13 @@ static switch_call_cause_t create_ws_bridge(
 		return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
 }
 
-#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url json | stop ws_url json>"
+#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url json>"
 SWITCH_STANDARD_API(mod_wsbridge)
 {
 	int argc;
 	char *argv[API_PARAMS_MAX];
 	char *ccmd = NULL;
 	char *uuid;
-	char *command;
 	char *ws_url;
 	char *content_type;
 	char *headers;
@@ -2264,27 +2225,17 @@ SWITCH_STANDARD_API(mod_wsbridge)
 	}
 
 	uuid = argv[0];
-	command = argv[1];
 	ws_url = argv[2];
 	content_type = argv[3];
 	headers = argv[4];
 
-	stream->write_function(stream, "UUID: %s\n", uuid);
-	stream->write_function(stream, "Command: %s\n", command);
-	stream->write_function(stream, "WS URL: %s\n", ws_url);
-	stream->write_function(stream, "Content Type: %s\n", content_type);
-	stream->write_function(stream, "Headers: %s\n", headers);
-
-	// Find the session corresponding to the leg UUID
 	if (!(api_session 	= switch_core_session_locate(uuid))) {
-			// Session not found
 			return SWITCH_STATUS_FALSE;
 	}
 
-	// Create a memory pool for the new session
 	pool = switch_core_session_get_pool(api_session);
 
-	cause = create_ws_bridge(api_session, NULL, NULL, &new_session, &pool, 0, NULL);
+	cause = create_ws_bridge(api_session, &new_session, &pool, 0, NULL, ws_url, content_type, headers);
 	return cause;
 } 
 
