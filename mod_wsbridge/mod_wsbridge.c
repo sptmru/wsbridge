@@ -28,6 +28,7 @@
  * Tiago Lam
  * Neil Stratford (neil.stratford@vonage.com)
  * Dragos Oancea  (dragos.oancea@vonage.com)
+ * Soslan Aldatov (soslanaldatov@gmail.com)
  *
  *
  * mod_wsbridge.c -- WSBRIDGE Endpoint Module for Websockets
@@ -92,6 +93,9 @@
 #define WS_AUDIO_BUFFER_SIZE 1024 /*frames*/
 
 #define DTMF_QUEUE_SIZE 100 /*digits*/
+
+#define API_PARAMS_MIN 3
+#define API_PARAMS_MAX 5
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_wsbridge_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_wsbridge_shutdown);
@@ -1888,6 +1892,351 @@ SWITCH_STANDARD_API(mod_wsbridge_debug)
 	}
 
 	return SWITCH_STATUS_SUCCESS;
+}
+
+static switch_call_cause_t create_ws_bridge(
+    switch_core_session_t *session,
+		switch_core_session_t **new_session,
+		switch_memory_pool_t **pool,
+    switch_originate_flag_t flags,
+    switch_call_cause_t *cancel_cause,
+		char *ws_uri,
+		char *ws_content_type,
+		char *ws_headers
+		)
+{
+		if ((*new_session = switch_core_session_request(wsbridge_endpoint_interface, SWITCH_CALL_DIRECTION_OUTBOUND, flags, pool)) != 0) {
+			private_t *tech_pvt;
+			switch_channel_t *channel = NULL , *new_channel;
+			const char *prot, *p;
+			uint32_t use_ssl;
+			// char *ws_uri = NULL , *ws_content_type = NULL , *ws_headers = NULL;
+			/* Maximum lenght for the headers field. */
+			char parsed_ws_headers[WS_HEADERS_MAX_SIZE];
+			struct lws_context *context;
+			cJSON* json_req = NULL;
+
+			switch_core_session_add_stream(*new_session, NULL);
+			if ((tech_pvt = (private_t *) switch_core_session_alloc(*new_session, sizeof(private_t))) != 0) {
+				new_channel = switch_core_session_get_channel(*new_session);
+				wsbridge_tech_init(tech_pvt, *new_session);
+			} else {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(*new_session), SWITCH_LOG_CRIT, "Hey where is my memory pool?\n");
+				switch_core_session_destroy(new_session);
+				return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+			}
+
+			if (session) {
+				channel = switch_core_session_get_channel(session);
+				assert(channel != NULL);
+			} 
+
+			if (zstr(ws_uri)) {
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_ERROR,
+						"Invalid Websocket destination (empty URI)\n");
+				}
+				switch_core_session_destroy(new_session);
+				return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+			}
+
+			if (session) {
+				switch_log_printf(
+					SWITCH_CHANNEL_SESSION_LOG(session),
+					SWITCH_LOG_INFO,
+					"SIP headers, URI [%s], HEADERS [%s], CONTENT-TYPE [%s]",
+					ws_uri,
+					ws_headers,
+					ws_content_type);
+			}
+
+			/* Handle the URI (it's mandatory) */
+
+			// char name[WS_URI_MAX_SIZE];
+
+			switch_url_decode(ws_uri);
+			wsbridge_str_remove_quotes(ws_uri);
+			wsbridge_str_remove_empty_spaces(ws_uri);
+
+			/* Handle the custom headers (they are optional) */
+			if (!zstr(ws_headers)) {
+				switch_url_decode((char *)ws_headers);
+				wsbridge_str_remove_quotes(ws_headers);
+
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_INFO,
+						"Decoded "HEADER_WS_HEADERS": [%s]",
+						ws_headers);
+				}
+
+				/* Too long JSON headers */
+				if (strlen(ws_headers) >= WS_HEADERS_MAX_SIZE) {
+					if (session) {
+						switch_log_printf(
+							SWITCH_CHANNEL_SESSION_LOG(session),
+							SWITCH_LOG_NOTICE,
+							"JSON blob [%s] in \"HEADER_WS_HEADERS\" header too long [%d]. Dropping.\n",
+							ws_headers,
+							WS_HEADERS_MAX_SIZE);
+					}
+
+					switch_core_session_destroy(new_session);
+					return SWITCH_CAUSE_MANDATORY_IE_LENGTH_ERROR;
+				}
+
+				wsbridge_strncpy_null_term(parsed_ws_headers, ws_headers, WS_HEADERS_MAX_SIZE);
+				json_req = cJSON_Parse(parsed_ws_headers);
+
+				/* Failed to parse JSON headers */
+				if (json_req == NULL) {
+					if (session) {
+						switch_log_printf(
+							SWITCH_CHANNEL_SESSION_LOG(session),
+							SWITCH_LOG_NOTICE,
+							"Invalid JSON blob [%s] in \"HEADER_WS_HEADERS\" header. Dropping.\n",
+							parsed_ws_headers);
+					}
+
+					switch_core_session_destroy(new_session);
+					return SWITCH_CAUSE_INVALID_IE_CONTENTS;
+				}
+			} else {
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_NOTICE,
+						"Missing optional \"HEADER_WS_HEADERS\" header. Ignoring.\n");
+				}
+			}
+
+			/* Handle the content-type header */
+			if (zstr(ws_content_type)) {
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_NOTICE,
+						"Invalid content-type; Using default [%s]\n",
+						L16_16000);
+				}
+				wsbridge_strncpy_null_term(tech_pvt->content_type, L16_16000, WS_CONT_TYPE_MAX_SIZE);
+			} else {
+				switch_url_decode((char *)ws_content_type);
+				wsbridge_str_remove_quotes(ws_content_type);
+				wsbridge_str_remove_empty_spaces(ws_content_type);
+				/*
+					XXXNOTE: This could be much more more granular, trying to parse
+					the format below. However there's not much gain as of now, since
+					only two content types are supported.
+					(Content-Type := type "/" subtype *[";" parameter] )
+				*/
+				wsbridge_strncpy_null_term(tech_pvt->content_type, ws_content_type, WS_CONT_TYPE_MAX_SIZE);
+			}
+
+			if (wsbridge_codecs_init(tech_pvt, *new_session)) {
+				/* The content type provided is not supported */
+				switch_core_session_destroy(new_session);
+				return SWITCH_CAUSE_SERVICE_NOT_IMPLEMENTED;
+			}
+
+			if (tech_pvt->frame_sz) {
+				if (session) {
+					switch_core_timer_init(&tech_pvt->write_rtp_timer, "soft", PTIME_RTP_MS, tech_pvt->frame_sz, switch_core_session_get_pool(session));
+					switch_core_timer_init(&tech_pvt->ws_timer, "soft", WS_TIMER_MS, tech_pvt->frame_sz, switch_core_session_get_pool(session));
+				} else {
+					switch_core_timer_init(&tech_pvt->write_rtp_timer, "soft", PTIME_RTP_MS, tech_pvt->frame_sz, module_pool);
+					switch_core_timer_init(&tech_pvt->ws_timer, "soft", WS_TIMER_MS, tech_pvt->frame_sz, module_pool);
+				}
+
+				switch_zmalloc(tech_pvt->write_data, tech_pvt->frame_sz * 2 * FRAMES_NR);  // bytes  WSBRIDGE_OUTPUT_BUFFER_SIZE
+				switch_zmalloc(tech_pvt->databuf, tech_pvt->frame_sz * 2);  // bytes tech_pvt->frame_sz * sizeof(int16_t)
+
+				tech_pvt->read_frame.data = tech_pvt->databuf;
+				tech_pvt->read_frame.datalen = tech_pvt->read_frame.buflen = tech_pvt->frame_sz * 2;
+
+			} else {
+				if (session) {
+					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Frame size not set!\n");
+				}
+				switch_core_session_destroy(new_session);
+				return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+			}
+
+			// incoming WS buffer 
+			if (switch_buffer_create_dynamic(&tech_pvt->ws_audio_buffer,  tech_pvt->frame_sz * 2, WS_AUDIO_BUFFER_SIZE * tech_pvt->frame_sz * 2, 0) != SWITCH_STATUS_SUCCESS) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Memory Error!\n");
+				return SWITCH_STATUS_MEMERR;
+			}
+
+			/* Add content-type to JSON message sent on handshake */
+			if (json_req == NULL) {
+				json_req = cJSON_CreateObject();
+			}
+			cJSON_AddItemToObject(json_req, "content-type", cJSON_CreateString(tech_pvt->content_type));
+
+			tech_pvt->message = json_req;
+
+			/* Set the actual thing up here */
+			if (lws_parse_uri((char*) ws_uri, &prot, &tech_pvt->i.address, &tech_pvt->i.port, &p)) {
+				/* XXX Error */
+				return SWITCH_CAUSE_INVALID_URL;
+			}
+
+			/* add back the leading / on path */
+			tech_pvt->path[0] = '/';
+			snprintf(tech_pvt->path + 1, sizeof(tech_pvt->path) - 2, "%s", p);
+			tech_pvt->path[sizeof(tech_pvt->path) - 1] = '\0';
+			tech_pvt->i.path = tech_pvt->path;
+
+			if (!strcmp(prot, "http") || !strcmp(prot, "ws")) {
+				/* Do not establish a secure connection */
+				use_ssl = 0;
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_DEBUG,
+						"Found http/ws protocol. Establishing an unsecure connection\n");
+				}
+			} else if (!strcmp(prot, "https") || !strcmp(prot, "wss")) {
+				/*
+					* Note: A new version of libwebsockets has an enum defining names
+					* for the `use_ssl` member, but for now:
+					* 0 = ws://, 1 = wss:// encrypted, 2 = wss:// allow self
+					*/
+
+				/* Accept self-signed certificates */
+				use_ssl = 2;
+				/* Initialise the SSL library - otherwise the call does nothing */
+				tech_pvt->info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+				tech_pvt->info.options |= LWS_SERVER_OPTION_PEER_CERT_NOT_REQUIRED;
+
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_DEBUG,
+						"Found https/wss protocol. Establishing a secure connection, accepting self-signed certificates\n");
+				}
+			} else {
+				if (session) {
+					switch_log_printf(
+						SWITCH_CHANNEL_SESSION_LOG(session),
+						SWITCH_LOG_WARNING,
+						"Unknown protocol found in URI [%s]. Dropping the connection\n",
+						prot);
+				}
+
+				switch_core_session_destroy(new_session);
+				return SWITCH_CAUSE_INVALID_URL;
+			}
+
+			tech_pvt->info.port = CONTEXT_PORT_NO_LISTEN;
+			tech_pvt->info.protocols = WSBRIDGE_protocols;
+			tech_pvt->info.gid = -1;
+			tech_pvt->info.uid = -1;
+			tech_pvt->info.count_threads = 1; 
+			tech_pvt->info.fd_limit_per_thread = 500;  /*save memory, libwebsockets is allocating mem for this at init time ("mem: pollfd map: ")*/
+			
+			/*
+				* Create the context sequentially, as indicated in the docs - but the
+				* reason is the same as when calling lws_context_destroy, to avoid
+				* multithreading issues coming from OpenSSL
+				*/
+			switch_mutex_lock(globals.mutex);
+			context = lws_create_context(&tech_pvt->info);
+			switch_mutex_unlock(globals.mutex);
+
+			if (context == NULL) {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_CRIT, "Creating libwebsocket context failed\n");
+				switch_core_session_destroy(new_session);
+				return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+			}
+
+			tech_pvt->context = context;
+
+			tech_pvt->i.context = context;
+			tech_pvt->i.ssl_connection = use_ssl;
+			tech_pvt->i.host = tech_pvt->i.address;
+			tech_pvt->i.origin = tech_pvt->i.address;
+			tech_pvt->i.ietf_version_or_minus_one = -1;
+			tech_pvt->i.client_exts = exts;
+
+			/* Hook the session onto the user object for the websocket */
+			assert(*new_session != NULL);
+			tech_pvt->i.userdata = (void*)*new_session;
+
+			tech_pvt->i.protocol = WSBRIDGE_protocols[PROTOCOL_WSBRIDGE].name;
+			tech_pvt->ws_connected = FALSE;
+
+			if (use_ssl) {
+				switch_mutex_lock(globals.mutex);
+				tech_pvt->wsi_wsbridge = lws_client_connect_via_info(&tech_pvt->i);
+				switch_mutex_unlock(globals.mutex);
+			} else {
+				tech_pvt->wsi_wsbridge = lws_client_connect_via_info(&tech_pvt->i);
+			}
+
+			tech_pvt->write_count = 0;
+			tech_pvt->write_start = 0;
+			tech_pvt->write_end = 0;
+
+			tech_pvt->state = WSBRIDGE_STATE_STARTED;
+			switch_set_flag_locked(tech_pvt, TFLAG_OUTBOUND);
+			switch_channel_set_state(new_channel, CS_INIT);
+
+			wsbridge_thread_launch(tech_pvt);
+
+			return SWITCH_CAUSE_SUCCESS;
+		}
+
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_CRIT, "Cannot allocate memory or SPS limit reached!\n");
+		return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+}
+
+#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url json>"
+SWITCH_STANDARD_API(mod_wsbridge)
+{
+	int argc;
+	char *argv[API_PARAMS_MAX];
+	char *ccmd = NULL;
+	char *uuid;
+	char *ws_url;
+	char *content_type;
+	char *headers;
+
+	switch_core_session_t *api_session;
+	switch_memory_pool_t *pool;
+	switch_core_session_t *new_session;
+	switch_call_cause_t cause;
+
+	if (zstr(cmd)) {
+		stream->write_function(stream, "-usage: %s\n", WSBRIDGE_API_SYNTAX);
+		return SWITCH_STATUS_SUCCESS;
+	} 
+
+	ccmd = strdup(cmd);
+	argc = switch_separate_string(ccmd, ' ', argv, API_PARAMS_MAX);
+
+	if (argc < API_PARAMS_MIN || argc > API_PARAMS_MAX) {
+		stream->write_function(stream, "-usage: %s\n", WSBRIDGE_API_SYNTAX);
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	uuid = argv[0];
+	ws_url = argv[2];
+	content_type = argv[3];
+	headers = argv[4];
+
+	if (!(api_session 	= switch_core_session_locate(uuid))) {
+			return SWITCH_STATUS_FALSE;
+	}
+
+	pool = switch_core_session_get_pool(api_session);
+
+	cause = create_ws_bridge(api_session, &new_session, &pool, 0, NULL, ws_url, content_type, headers);
+	return cause;
 } 
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_wsbridge_load)
@@ -1905,6 +2254,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_wsbridge_load)
 	wsbridge_endpoint_interface->state_handler = &wsbridge_state_handlers;
 
 	SWITCH_ADD_API(commands_api_interface, "wsbridge_debug", "Enable WSBridge Debug", mod_wsbridge_debug, WSBRIDGE_DEBUG_SYNTAX);
+	SWITCH_ADD_API(commands_api_interface, "wsbridge", "WSBridge API", mod_wsbridge, WSBRIDGE_API_SYNTAX);
 	switch_console_set_complete("add wsbridge_debug on");
 	switch_console_set_complete("add wsbridge_debug off");
 
