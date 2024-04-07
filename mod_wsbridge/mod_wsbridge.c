@@ -2195,7 +2195,7 @@ static switch_call_cause_t create_ws_bridge(
 		return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
 }
 
-#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url json>"
+#define WSBRIDGE_API_SYNTAX "<leg_uuid> <start ws_url content_type headers>"
 SWITCH_STANDARD_API(mod_wsbridge)
 {
 	int argc;
